@@ -12,9 +12,10 @@ Análise Comparativa de Degradação de Performance de Escrita e Tamanho de Índ
 - **v1.0 – 20/11/2025:** Criação inicial do planejamento.
 - **v1.1 – 21/11/2025:** Ajuste no título para remover menção específica a microserviços.
 - **v1.2 – 02/12/2025:** Ajuste no conteúdo para MySQL
+- **v2.0 – 12/12/2025:** Ajuste versão final
 ### 1.4 Datas
 - **Criação:** 20/11/2025
-- **Última atualização:** 02/12/2025
+- **Última atualização:** 12/12/2025
 
 ### 1.5 Autores
 - **Autor Principal:** João Victor Temponi Daltro de Castro (Eng. Software)
@@ -129,8 +130,296 @@ O experimento seguirá um desenho fatorial $2 \times 3$, combinando dois tipos d
 * **T6:** UUIDv7 com 50M linhas.
 
 ---
+## 6. Riscos de alto nível, premissas e critérios de sucesso
 
-## 5. Fluxograma de Operacionalização
+### 6.1 Riscos de alto nível (negócio, técnicos, etc.)
+- **Risco de Hardware (Saturação de Disco):** O volume de dados gerado pelo UUIDv4 (devido à fragmentação) pode exceder o espaço disponível no ambiente de teste, interrompendo a execução.
+- **Risco de Ruído no Ambiente (Noisy Neighbor):** Processos do Sistema Operacional (atualizações, indexação de arquivos, antivírus) podem consumir I/O concorrente, distorcendo as métricas de latência.
+- **Risco de Estabilidade do Cliente:** O script gerador de carga (Python) pode sofrer *Out-Of-Memory* ou gargalos de CPU antes do banco de dados, tornando-se o fator limitante.
+
+### 6.2 Critérios de sucesso globais (go / no-go)
+- **Sucesso Técnico:** O experimento será considerado válido se for possível concluir a ingestão de 50 milhões de registros para ambos os algoritmos (v4 e v7) sem erros fatais ou corrupção de dados no SGBD.
+- **Sucesso Analítico:** Obtenção de dados estatisticamente significantes (p < 0.05 ou intervalos de confiança claros) que permitam diferenciar o desempenho dos dois algoritmos.
+
+### 6.3 Critérios de parada antecipada (pré-execução)
+- Detecção de falhas na unicidade dos UUIDs gerados pela biblioteca.
+- Falta de espaço livre em disco inferior a 150GB antes do início dos testes.
+- Incapacidade de configurar o limite de memória do container Docker (cgroups não funcionando).
+
+---
+
+## 7. Modelo conceitual e hipóteses
+
+### 7.1 Modelo conceitual do experimento
+O modelo baseia-se na mecânica das árvores B+ (B-Trees) utilizadas pelo InnoDB.
+- **Cenário A (UUIDv7 - Time-ordered):** A inserção ocorre de forma quase sequencial (monotonicamente crescente). O SGBD preenche as páginas de dados da direita para a esquerda até o *fill factor* ideal (~93%), minimizando operações de I/O aleatórias e maximizando o uso do cache.
+- **Cenário B (UUIDv4 - Aleatório):** A inserção ocorre em posições aleatórias da árvore. Isso obriga o SGBD a carregar páginas antigas do disco para a memória (Random Read) e realizar divisões de página (*Page Splits*) frequentes, resultando em páginas com ocupação parcial (~50-70%) e arquivos fisicamente maiores.
+
+### 7.2 Hipóteses formais (H0, H1)
+- **H0 (Nula):** $\mu_{v7} = \mu_{v4}$ e $Size_{v7} = Size_{v4}$. (Não há diferença significativa na latência média de inserção ou no tamanho final do índice entre os algoritmos).
+- **H1 (Desempenho):** $\mu_{v7} < \mu_{v4}$. (A latência média de inserção do UUIDv7 é estatisticamente menor que a do UUIDv4, especialmente sob carga alta).
+- **H2 (Armazenamento):** $Size_{v7} < Size_{v4}$. (O tamanho físico ocupado pelo índice UUIDv7 é menor devido à ausência de fragmentação interna excessiva).
+
+### 7.3 Nível de significância e considerações de poder
+- **Nível de Significância ($\alpha$):** 0,05 (5%).
+- **Poder Estatístico:** Dado o tamanho da amostra (50 milhões de registros), o poder estatístico é extremamente alto. A análise focará na **magnitude do efeito** (diferença prática percentual) e não apenas na rejeição da hipótese nula.
+
+---
+
+## 8. Variáveis, fatores, tratamentos e objetos de estudo
+
+### 8.1 Objetos de estudo
+Instâncias de tabelas relacionais no motor InnoDB (MySQL 8.x) configuradas com `innodb_file_per_table=1`.
+
+### 8.2 Sujeitos / participantes (visão geral)
+Não aplicável (experimento computacional *in silico*). O "sujeito" é o Sistema Gerenciador de Banco de Dados.
+
+### 8.3 Variáveis independentes (fatores) e seus níveis
+- **Fator A: Algoritmo de Chave Primária.**
+    - Nível A1: UUIDv4 (Aleatório).
+    - Nível A2: UUIDv7 (Ordenado por tempo).
+- **Fator B: Volume de Carga (Cardinalidade).**
+    - Nível B1: 1.000.000 registros (Carga Inicial).
+    - Nível B2: 10.000.000 registros (Carga Média).
+    - Nível B3: 50.000.000 registros (Estresse/Saturação).
+
+### 8.4 Tratamentos (condições experimentais)
+Combinação dos fatores resultando em 6 tratamentos únicos (Runs T1 a T6), conforme detalhado na seção 4.2.
+
+### 8.5 Variáveis dependentes (respostas)
+- Latência de Inserção (Tempo de Resposta).
+- Throughput (Transações por Segundo).
+- Tamanho Físico do Índice (MB/GB).
+- Contagem de *Page Splits*.
+
+### 8.6 Variáveis de controle / bloqueio
+- Hardware (CPU, RAM limitada a 1GB, Disco SSD).
+- Configuração do MySQL (Buffer Pool, Log File Size fixos).
+- Cliente de Carga (Mesmo script, mesma versão do Python).
+
+### 8.7 Possíveis variáveis de confusão conhecidas
+- *Cold Start* do banco de dados (mitigado por *warm-up*).
+- Garbage Collection do Python (mitigado por medição interna no banco via `performance_schema`).
+
+---
+
+## 9. Desenho experimental
+
+### 9.1 Tipo de desenho (completamente randomizado, blocos, fatorial, etc.)
+**Fatorial Completo $2 \times 3$.** Este desenho permite analisar o efeito principal de cada algoritmo e, crucialmente, a interação entre o algoritmo e o volume de dados (ex: a degradação do v4 acelera mais rápido que a do v7?).
+
+### 9.2 Randomização e alocação
+A ordem de execução dos blocos (Runs completos de v4 ou v7) será alternada ou sorteada para evitar vieses temporais da máquina hospedeira, mas cada Run começa com um banco de dados "zerado" (DROP/CREATE).
+
+### 9.3 Balanceamento e contrabalanço
+Os grupos são perfeitamente balanceados: ambos processam exatamente a mesma quantidade de registros e o mesmo *payload* de dados não-chave.
+
+### 9.4 Número de grupos e sessões
+- **Grupos:** 2 (v4 e v7).
+- **Sessões:** Cada carga completa até 50M é uma sessão. Serão realizadas no mínimo 3 repetições (sessões) completas para cada grupo para garantir consistência dos dados.
+
+---
+
+## 10. População, sujeitos e amostragem
+
+### 10.1 População-alvo
+Sistemas de banco de dados transacionais (OLTP) de alta performance que utilizam armazenamento em B-Trees.
+
+### 10.2 Critérios de inclusão de sujeitos
+Registros sintéticos contendo IDs válidos segundo as RFCs (4122 e 9562) e payload de texto aleatório simulando dados reais.
+
+### 10.3 Critérios de exclusão de sujeitos
+Execuções interrompidas por falhas externas (energia, crash do SO) serão descartadas integralmente.
+
+### 10.4 Tamanho da amostra planejado (por grupo)
+50.000.000 (Cinquenta milhões) de operações de escrita (amostras) por grupo, por repetição.
+
+### 10.5 Método de seleção / recrutamento
+Geração de dados sintéticos via algoritmos pseudo-aleatórios (`secrets`, `faker`).
+
+### 10.6 Treinamento e preparação dos sujeitos
+Não aplicável.
+
+---
+
+## 11. Instrumentação e protocolo operacional
+
+### 11.1 Instrumentos de coleta (questionários, logs, planilhas, etc.)
+- **Script de Carga (Python):** Gera carga e registra latência percebida pelo cliente em arquivos CSV (`client_metrics.csv`).
+- **MySQL Performance Schema:** Coleta métricas precisas de I/O e tempo de execução interno (`db_metrics.csv`).
+- **Shell Scripts:** Monitoram uso de recursos do SO (`iostat`, `docker stats`) a cada segundo.
+
+### 11.2 Materiais de suporte (instruções, guias)
+- `README.md` no repositório com instruções de setup.
+- Arquivo `docker-compose.yml` padronizado.
+
+### 11.3 Procedimento experimental (protocolo – visão passo a passo)
+1.  **Setup:** Inicializar container MySQL com limite de RAM e criar esquema da tabela.
+2.  **Warm-up:** Inserir 10.000 registros e descartar métricas.
+3.  **Execução:** Iniciar loop de inserção em lotes (batch size = 1000).
+4.  **Coleta Contínua:** Registrar latência de cada lote.
+5.  **Pontos de Controle:** Ao atingir 1M, 10M e 50M, pausar carga por 10s, forçar *flush* e medir tamanho dos arquivos `.ibd` e contadores de *Page Splits*.
+6.  **Teardown:** Exportar logs, destruir container e volumes.
+7.  **Repetição:** Reiniciar processo para o próximo tratamento.
+
+### 11.4 Plano de piloto (se haverá piloto, escopo e critérios de ajuste)
+Será realizado um piloto com 500.000 registros para validar o pipeline de coleta de dados e garantir que a gravação de logs não introduz *overhead* significativo.
+
+---
+
+## 12. Plano de análise de dados (pré-execução)
+
+### 12.1 Estratégia geral de análise (como responderá às questões)
+A análise será quantitativa comparativa. Serão gerados gráficos de linha (Eixo X: Quantidade de Linhas, Eixo Y: Latência/Tamanho) para visualizar a divergência entre as curvas do UUIDv4 e UUIDv7.
+
+### 12.2 Métodos estatísticos planejados
+- Cálculo de estatísticas descritivas: Média, Mediana, Desvio Padrão, Percentil 95 e 99.
+- Cálculo de Delta Percentual ($\% \Delta$) de melhoria/piora entre os grupos.
+
+### 12.3 Tratamento de dados faltantes e outliers
+- Dados faltantes invalidam o Run.
+- Outliers extremos (> 5 segundos) serão investigados; se correlacionados com *freezes* do SO host, serão removidos da média (trimming), mas relatados nos anexos.
+
+### 12.4 Plano de análise para dados qualitativos (se houver)
+Não aplicável.
+
+---
+
+## 13. Avaliação de validade (ameaças e mitigação)
+
+### 13.1 Validade de conclusão
+- *Ameaça:* Variância natural de desempenho do SSD.
+- *Mitigação:* Executar múltiplas rodadas (3x) e calcular a média dos resultados.
+
+### 13.2 Validade interna
+- *Ameaça:* Interferência de processos no Host (SO).
+- *Mitigação:* Executar em ambiente dedicado ou durante período de inatividade, desligando serviços não essenciais.
+
+### 13.3 Validade de constructo
+- *Ameaça:* A latência do cliente inclui tempo de rede (localhost) e serialização Python.
+- *Mitigação:* Monitorar métricas internas do banco (`wait_events`) para isolar o tempo real de processamento do DB.
+
+### 13.4 Validade externa
+- *Ameaça:* Hardware local (NVMe) é diferente de Storage de Nuvem (EBS).
+- *Mitigação:* Focar nas métricas lógicas (IOPS, Page Splits) que independem da velocidade do disco, garantindo generalização.
+
+### 13.5 Resumo das principais ameaças e estratégias de mitigação
+- **Host Noise:** Isolamento e repetição.
+- **Client Bottleneck:** Monitoramento de CPU do cliente.
+- **Cache Warm-up:** Procedimento de *Warm-up* antes da coleta.
+
+---
+
+## 14. Ética, Privacidade e Conformidade
+
+### 14.1 Questões éticas (uso de sujeitos, incentivos, etc.)
+O experimento não envolve seres humanos ou animais.
+
+### 14.2 Consentimento informado
+Não aplicável.
+
+### 14.3 Privacidade e proteção de dados
+Todos os dados utilizados são sintéticos (falsos), gerados aleatoriamente. Não há processamento de PII (Personal Identifiable Information).
+
+### 14.4 Aprovações necessárias (comitê de ética, jurídico, DPO, etc.)
+Aprovação técnica do PI e/ou Orientador Acadêmico.
+
+---
+
+## 15. Recursos, Infraestrutura e Orçamento
+
+### 15.1 Recursos humanos e papéis
+- **Engenheiro de Software Sênior (Autor):** Planejamento, execução, coleta e análise.
+
+### 15.2 Infraestrutura técnica necessária
+- Workstation Linux (Ubuntu/Pop!_OS).
+- Docker Engine & Docker Compose.
+- Python 3.10+.
+- Mínimo de 150GB de armazenamento livre.
+
+### 15.3 Materiais e insumos
+- Bibliotecas Open Source (`mysql-connector-python`, `uuid6`, `numpy`, `pandas`).
+
+### 15.4 Orçamento e custos estimados
+- **Financeiro:** Custo zero (utilização de hardware e software já disponíveis).
+- **Horas:** Estimativa de 40-60 horas de dedicação técnica.
+
+---
+
+## 16. Cronograma, marcos e riscos operacionais
+
+### 16.1 Macrocronograma (até o início da execução)
+- **20/11 - 25/11:** Planejamento e Design (Concluído).
+- **26/11 - 01/12:** Desenvolvimento dos Scripts.
+- **02/12 - 05/12:** Teste Piloto e Ajustes.
+- **06/12:** Início da Execução Oficial (Coleta).
+
+### 16.2 Dependências entre atividades
+A Execução Oficial (06/12) depende estritamente da validação dos scripts no Piloto.
+
+### 16.3 Riscos operacionais e plano de contingência
+- **Falha de Hardware:** Utilizar backup em nuvem (instância AWS EC2 Spot) caso a workstation falhe.
+- **Perda de Dados:** Logs são salvos em CSV a cada lote; em caso de falha, reinicia-se apenas o Run afetado.
+
+---
+
+## 17. Governança do experimento
+
+### 17.1 Papéis e responsabilidades formais
+O PI (João Victor Temponi) é responsável pela integridade técnica e decisão de *Go/No-Go*.
+
+### 17.2 Ritos de acompanhamento pré-execução
+Revisão de código e *Dry-run* (simulação) dos scripts antes da coleta massiva.
+
+### 17.3 Processo de controle de mudanças no plano
+Qualquer alteração nas variáveis (ex: tamanho do payload) exige atualização deste documento e descarte de dados prévios para manter a consistência.
+
+---
+
+## 18. Plano de documentação e reprodutibilidade
+
+### 18.1 Repositórios e convenções de nomeação
+- GitHub: Repositório contendo `/src`, `/docs` e `/results`.
+- Nomenclatura: `run_{data}_{algoritmo}_{volume}.csv`.
+
+### 18.2 Templates e artefatos padrão
+- `Makefile` com comandos padronizados (`make setup`, `make run-v4`, `make run-v7`).
+- `requirements.txt` com versões pinadas das bibliotecas.
+
+### 18.3 Plano de empacotamento para replicação futura
+O projeto incluirá um *Container Dev* ou instruções claras de Docker para que qualquer pesquisador possa replicar o ambiente exato com um único comando.
+
+---
+
+## 19. Plano de comunicação
+
+### 19.1 Públicos e mensagens-chave pré-execução
+- Stakeholders Técnicos: Comunicar o objetivo de validação de performance e potencial economia de infraestrutura.
+
+### 19.2 Canais e frequência de comunicação
+- Atualizações via commits no repositório e relatório final em formato Markdown/PDF.
+
+### 19.3 Pontos de comunicação obrigatórios
+- Início da Execução.
+- Conclusão da Coleta.
+- Publicação dos Resultados.
+
+---
+
+## 20. Critérios de prontidão para execução (Definition of Ready)
+
+### 20.1 Checklist de prontidão (itens que devem estar completos)
+- [ ] Plano experimental aprovado (v1.2).
+- [ ] Scripts de automação (Carga e Métricas) desenvolvidos e sem erros no linter.
+- [ ] Ambiente Docker configurado com limitação de memória testada.
+- [ ] Disco com espaço suficiente verificado.
+- [ ] Piloto executado com sucesso.
+
+### 20.2 Aprovações finais para iniciar a operação
+- **Aprovado por:** João Victor Temponi Daltro de Castro.
+- **Data da Aprovação:** 12/12/2025.
+  
+## Fluxograma de Operacionalização
 
 O diagrama abaixo ilustra o passo a passo da execução do experimento, desde a preparação do ambiente até a coleta final dos dados.
 
