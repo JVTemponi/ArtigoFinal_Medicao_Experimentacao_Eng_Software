@@ -11,8 +11,7 @@ Análise Comparativa de Degradação de Performance de Escrita e Tamanho de Índ
 ### 1.3 Versão do Documento e Histórico de Revisão
 - **v1.0 – 20/11/2025:** Criação inicial do planejamento.
 - **v1.1 – 21/11/2025:** Ajuste no título para remover menção específica a microserviços.
-- **v1.2 – 02/12/2025:** Ajuste no título para remover menção específica a microserviços.
-
+- **v1.2 – 02/12/2025:** Ajuste no conteúdo para MySQL
 ### 1.4 Datas
 - **Criação:** 20/11/2025
 - **Última atualização:** 02/12/2025
